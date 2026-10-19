@@ -38,7 +38,7 @@ CIRCT aims to make hardware compiler development more agile, enabling researcher
 ---
 # Tutorial Part 1: Basics
 
-1. Install CIRCT tools in a docker image.
+1. Install CIRCT tools on your local machine.
 2. Compile a hardware design to CIRCT IR.
 3. Apply CIRCT optimization passes.
 4. Generate an output circuit for verification/implementation.
@@ -46,25 +46,34 @@ CIRCT aims to make hardware compiler development more agile, enabling researcher
 ---
 ## 1.1 Install CIRCT Tools 
 ```
-git clone https://github.com/cowardsa/CIRCT_TUTORIAL_2026
+git clone https://github.com/ZhangBihui0311/CIRCT_TUTORIAL_2026
 cd CIRCT_TUTORIAL_2026
 ```
-Then either:
-* Docker Option (may need sudo)
+
+Install CIRCT's pre-built tools (firtool-1.147.0 release) directly on localhost:
+
+* Install the runtime dependencies (Debian/Ubuntu; `libz3` is needed by `circt-lec` and `circt-bmc`):
 ```
-docker build -t circt .
-docker run -it circt
+sudo apt-get update
+sudo apt-get install -y z3 libz3-dev libtinfo6
 ```
-* VSCode + Dev Container Option
+* Download and unpack the pre-built CIRCT release:
 ```
-code .
-Ctrl+Shift+P
-Dev Containers: Reopen in Container
+wget https://github.com/llvm/circt/releases/download/firtool-1.147.0/circt-full-shared-linux-x64.tar.gz
+tar -xzf circt-full-shared-linux-x64.tar.gz
+sudo mv firtool-1.147.0 /opt/circt
+rm circt-full-shared-linux-x64.tar.gz
 ```
+* Add the tools to your `PATH` (also add this line to your `~/.bashrc` to make it permanent):
+```
+export PATH="/opt/circt/bin:${PATH}"
+```
+
+> Alternatively, you can still use the provided `Dockerfile` / VSCode Dev Container to run the tutorial inside a container.
 
 ---
 
-From within the docker container you should now be able to use CIRCT's pre-built tools.
+You should now be able to use CIRCT's pre-built tools locally.
 `circt-opt --version` should produce:
 ```
 LLVM (http://llvm.org/):
@@ -72,6 +81,8 @@ LLVM (http://llvm.org/):
   Optimized build.
 CIRCT firtool-1.147.0
 ```
+
+Note where Z3 lives on your machine - section 1.6 passes it to `circt-bmc` via `--shared-libs`. On Debian/Ubuntu it is `/usr/lib/x86_64-linux-gnu/libz3.so`; check with `ldconfig -p | grep libz3`.
 
 ---
 ## 1.2 Compiling a Design
@@ -275,7 +286,7 @@ circt-bmc <design.mlir> -b <cycle count> --module <top module> \
           --shared-libs=<path to the Z3 shared library>
 ```
 
-Our example (Z3 lives at `/usr/lib/x86_64-linux-gnu/libz3.so` in the docker image):
+Our example (on Debian/Ubuntu Z3 lives at `/usr/lib/x86_64-linux-gnu/libz3.so`; check with `ldconfig -p | grep libz3`):
 ```
 circt-bmc rtl/fma_bmc_bmc.mlir -b 10 --module fma_bmc \
           --shared-libs=/usr/lib/x86_64-linux-gnu/libz3.so \
