@@ -5,6 +5,7 @@
     * [1.3 Optimizing a Design](#13-optimizing-a-design)
     * [1.4 Verifying a Transformation](#14-verifying-a-transformation)
     * [1.5 EDA Integration Generating Verilog](#15-eda-integration-generating-verilog)
+    * [1.6 Bounded Model Checking with circt-bmc](#16-bounded-model-checking-with-circt-bmc)
 * [Tutorial Part 2: Datapath Synthesis](#tutorial-part-2-datapath-synthesis)
 	* [2.1 Datapath Dialect](#21-datapath-dialect)
 	* [2.2 Synthesizing a Design](#22-synthesizing-a-design)
@@ -195,7 +196,7 @@ Which should return: `c1 == c2`
 
 ---
 ### Aside Bounded Model Checking
-CIRCT has support for [bounded model checking](https://circt.llvm.org/docs/Tools/circt-bmc/) through `circt-bmc`, which we will not cover in this tutorial.
+CIRCT has support for [bounded model checking](https://circt.llvm.org/docs/Tools/circt-bmc/) through `circt-bmc`, covered in section 1.6.
 
 ---
 ### Exercise 2 (5 mins)
@@ -234,6 +235,72 @@ endmodule
 1. Modify the command above to save the verilog to a file?
 2. Use `circt-verilog` to compile the generated verilog back to CIRCT IR?
 3. Use `circt-lec` to verify the round-trip preserved equivalence?
+
+---
+## 1.6 Bounded Model Checking with circt-bmc
+`circt-lec` compares two circuits combinationally. `circt-bmc` answers a different question: **can any assertion of a sequential design be violated within the first N clock cycles?** It unrolls the design cycle by cycle and asks Z3 for a counterexample.
+
+Three ingredients are needed (see `rtl/fma_bmc.sv`, a minimal sequential extension of `fma.sv`):
+1. **Sequential state** - a clocked register (`always_ff` → `seq.firreg`) for the tool to unroll over time.
+2. **Assertions** - `assert property` → `verif.clocked_assert`: what must hold in every cycle.
+3. **Assumptions** - `assume property` → `verif.clocked_assume`: constraints on the environment (inputs).
+
+---
+Compile the design as before:
+```
+circt-verilog rtl/fma_bmc.sv -o rtl/fma_bmc.mlir
+```
+Inspect `rtl/fma_bmc.mlir` and look for the new dialects in action:
+- `seq.firreg` (clocked via `seq.to_clock`) - the output register, i.e., the state that gets unrolled.
+- `verif.clocked_assert` / `verif.clocked_assume` - the properties from the `assert/assume property` statements.
+- `ltl.past` - the `$past(...)` references in the sequential property.
+
+---
+### Preparing the design for `circt-bmc`
+
+`circt-bmc` (firtool-1.147.0) cannot consume the `circt-verilog` output directly. It requires a canonical form:
+1. the clock is a `!seq.clock` module port and every register is clocked directly by that port (no `seq.to_clock` wrappers),
+2. plain `verif.assert` / `verif.assume` ops instead of the clocked variants,
+3. all assertions combined into a **single** `verif.assert` (assert their conjunction),
+4. `$past(...)` realized with explicit delay registers instead of `ltl` ops.
+
+`rtl/fma_bmc_bmc.mlir` ships exactly this rewritten form of the compiled design - open it side by side with `rtl/fma_bmc.mlir` to see the correspondence.
+
+---
+### `circt-bmc`
+
+General:
+```
+circt-bmc <design.mlir> -b <cycle count> --module <top module> \
+          --shared-libs=<path to the Z3 shared library>
+```
+
+Our example (Z3 lives at `/usr/lib/x86_64-linux-gnu/libz3.so` in the docker image):
+```
+circt-bmc rtl/fma_bmc_bmc.mlir -b 10 --module fma_bmc \
+          --shared-libs=/usr/lib/x86_64-linux-gnu/libz3.so \
+          --ignore-asserts-until=1
+```
+
+Which should return: `Bound reached with no violations!`
+
+`--ignore-asserts-until=1` skips checking cycle 0: the register's initial state is left unconstrained (symbolic), so the sequential property (`d` equals the previous cycle's fma) is only meaningful from the second cycle on. Try dropping the flag - `circt-bmc` will report a spurious cycle-0 violation.
+
+---
+### How does `circt-bmc` work?
+1. The register's initial state is left unconstrained (symbolic) - it could be anything.
+2. The design is unrolled for `b` cycles, creating fresh symbolic inputs per cycle.
+3. Per cycle, assumptions are added as constraints and assertions as proof obligations; Z3 searches for any trace that violates an assertion within the bound.
+4. `sat` means a counterexample trace exists (reported as a violation), `unsat` at every step means the bound was reached cleanly.
+
+Note the bound matters: BMC proves properties only up to the checked number of cycles, unlike the unbounded proof `circt-lec` gives for combinational equivalence. Note also the single-assertion limitation: designs with several properties must assert their conjunction (as done in `rtl/fma_bmc_bmc.mlir`).
+
+---
+### Exercise 6 (5 mins)
+Edit a copy of `rtl/fma_bmc_bmc.mlir` for each of the following:
+1. Break property 3 so it ignores the pipeline register: compare `%d_reg` against `%fma_out` instead of `%fma_d`. Re-run the command above. What is the smallest bound `-b` for which `circt-bmc` reports the violation?
+2. Undo that, then delete the `verif.assume` line instead. Which assertion fails now, and why?
+3. Increase the input widths to 5 bits (`i4` → `i5`, `i9` → `i10`, and retype the constants) and scale the assumption bounds accordingly (a ≤ 8, b ≤ 8, c ≤ 12). Which property fails now, and which still holds? Remove the assumption entirely - does property 1 survive? Let `circt-bmc` answer!
 
 ---
 # Tutorial Part 2: Datapath Synthesis
@@ -402,6 +469,7 @@ Hint: export AIGER from the `circt-synth` output, not directly from the MLIR gen
 - `circt-verilog`: parses SystemVerilog and emits CIRCT MLIR.
 - `circt-opt`: runs CIRCT/MLIR transformation and optimization passes.
 - `circt-lec`: checks logical equivalence between two CIRCT modules.
+- `circt-bmc`: bounded model checker - unrolls a sequential design for a fixed number of cycles and checks assertions (`verif.assert`) under assumptions (`verif.assume`) with Z3.
 - `firtool`: emits Verilog from CIRCT IR.
 - `circt-synth`: synthesizes CIRCT IR to lower-level logic, such as AIG.
 - `circt-translate`: converts CIRCT MLIR to external formats, such as AIGER.
